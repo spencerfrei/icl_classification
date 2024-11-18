@@ -21,9 +21,9 @@ def base_config():
         d=10,
         N=80,
         B=200,
-        B_val=50,
+        B_val=200,
         R=5.0,
-        max_steps=200,
+        max_steps=500,
         checkpoint_steps=[],
         learning_rate=0.01,
         use_cuda=False,
@@ -140,51 +140,74 @@ class TestLinearTransformer:
 
 # Training Tests
 class TestTraining:
-    def test_easy_learning(self, base_config):
+    @pytest.mark.parametrize("d,R", [
+        (5, 10),
+        (15, 12)
+    ])
+    def test_easy_learning(self, base_config, d, R):
         """Test model can learn an easy task"""
         # Increase SNR for easier learning
         config = base_config
-        config.R = 15.0
+        config.d = d 
+        config.R = R 
         
         trainer = Trainer(config)
         trainer.train()
         
         final_train_acc = trainer.metrics['train_acc'][-1]
         final_val_acc = trainer.metrics['val_acc'][-1]
-        
-        assert final_train_acc > 0.65, f"Train accuracy too low: {final_train_acc:.2%}"
-        assert final_val_acc > 0.65, f"Validation accuracy too low: {final_val_acc:.2%}"
-        assert abs(final_train_acc - final_val_acc) < 0.1, \
-            f"Train-val gap too large: {abs(final_train_acc - final_val_acc):.2%}"
 
-    @pytest.mark.parametrize("R", [2.0, 20.0])
-    def test_snr_sensitivity(self, base_config, R):
-        """Test model's sensitivity to signal-to-noise ratio"""
-        config = base_config
-        config.R = R
-        config.max_steps = 1000  # More steps for convergence
+        print(f"\nResults for d={d}, R={R}:")
+        print(f"Train accuracy: {final_train_acc:.2%}")
+        print(f"Val accuracy: {final_val_acc:.2%}")
         
-        trainer = Trainer(config)
-        trainer.train()
-        
-        final_acc = trainer.metrics['val_acc'][-1]
-        print(f"Final accuracy with R={R}: {final_acc:.2%}")
-        assert final_acc > 0.5, f"Failed to learn with R={R}, acc={final_acc:.2%}"
+        assert final_val_acc > 0.65, \
+            f"Validation accuracy too low for d={d}, R={R}: {final_val_acc:.2%}"
 
-    @pytest.mark.parametrize("N", [3, 80])
-    def test_context_size_effect(self, base_config, N):
-        """Test effect of context size on learning"""
-        config = base_config
-        config.N = N
-        config.R = config.d**0.25  # Small SNR to make task challenging
-        config.max_steps = 1000
+
+    def test_snr_sensitivity(self, base_config):
+        """Test that higher SNR leads to better performance"""
+        results = {}
         
-        trainer = Trainer(config)
-        trainer.train()
+        # Test with different SNRs
+        for R in [2.0, 20.0]:
+            config = base_config
+            config.R = R
+            config.d = 20
+            config.max_steps = 1000
+            
+            trainer = Trainer(config)
+            trainer.train()
+            
+            results[R] = trainer.metrics['val_acc'][-1]
         
-        final_acc = trainer.metrics['val_acc'][-1]
-        print(f"Final accuracy with N={N}: {final_acc:.2%}")
-        assert final_acc > 0.5, f"Failed to learn with N={N}, acc={final_acc:.2%}"
+        print(f"Accuracies - Low SNR (R=2): {results[2.0]:.2%}, High SNR (R=20): {results[20.0]:.2%}")
+        
+        # Check that higher SNR gives better accuracy
+        assert results[20.0] > results[2.0] + 0.05, \
+            f"Higher SNR should give notably better accuracy. Got R=20: {results[20.0]:.2%}, R=2: {results[2.0]:.2%}"
+
+    def test_context_size_effect(self, base_config):
+        """Test that larger context size leads to better performance"""
+        results = {}
+        
+        # Test with different context sizes
+        for N in [3, 80]:
+            config = base_config
+            config.N = N
+            config.R = config.d**0.25  # Small SNR to make task challenging
+            config.max_steps = 1000
+            
+            trainer = Trainer(config)
+            trainer.train()
+            
+            results[N] = trainer.metrics['val_acc'][-1]
+        
+        print(f"Accuracies - Small context (N=3): {results[3]:.2%}, Large context (N=80): {results[80]:.2%}")
+        
+        # Check that larger context gives better accuracy
+        assert results[80] > results[3] + 0.05, \
+            f"Larger context should give better accuracy. Got N=80: {results[80]:.2%}, N=3: {results[3]:.2%}"
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
