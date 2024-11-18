@@ -22,12 +22,16 @@ def base_config():
         N=80,
         B=200,
         B_val=200,
-        R=5.0,
+        R_train=5.0,
+        R_val=5.0,
         max_steps=500,
         checkpoint_steps=[],
         learning_rate=0.01,
         use_cuda=False,
-        use_wandb=False
+        use_wandb=False,
+        save_checkpoints=False,
+        save_results=False,
+        experiment_name='test'
     )
 
 # Dataset Tests
@@ -38,7 +42,7 @@ class TestGaussianMixtureDataset:
             base_config.d, 
             base_config.N, 
             base_config.B, 
-            base_config.R, 
+            base_config.R_train, 
             device
         )
         
@@ -55,7 +59,7 @@ class TestGaussianMixtureDataset:
             base_config.d, 
             base_config.N, 
             base_config.B, 
-            base_config.R, 
+            base_config.R_train, 
             device
         )
         
@@ -71,7 +75,7 @@ class TestGaussianMixtureDataset:
             base_config.d, 
             base_config.N, 
             base_config.B, 
-            base_config.R, 
+            base_config.R_train, 
             device
         )
         
@@ -92,17 +96,17 @@ class TestGaussianMixtureDataset:
                 mean_diffs.append(mean_diff)
         
         avg_mean_diff = np.mean(mean_diffs)
-        assert 1.5 * base_config.R < avg_mean_diff < 2.5 * base_config.R, \
-            f"Signal strength {avg_mean_diff} too far from target {2*base_config.R}"
+        assert 1.5 * base_config.R_train < avg_mean_diff < 2.5 * base_config.R_train, \
+            f"Signal strength {avg_mean_diff} too far from target {2*base_config.R_train}"
 
     def test_validation_reproducibility(self, base_config, device):
         """Test if validation dataset is reproducible"""
         dataset1 = GaussianMixtureDataset(
-            base_config.d, base_config.N, base_config.B, base_config.R, 
+            base_config.d, base_config.N, base_config.B, base_config.R_train, 
             device, is_validation=True
         )
         dataset2 = GaussianMixtureDataset(
-            base_config.d, base_config.N, base_config.B, base_config.R, 
+            base_config.d, base_config.N, base_config.B, base_config.R_train, 
             device, is_validation=True
         )
         
@@ -124,7 +128,7 @@ class TestGaussianMixtureDataset:
             base_config.d, 
             base_config.N, 
             base_config.B, 
-            base_config.R, 
+            base_config.R_train, 
             device,
             label_flip_p=label_flip_p
         )
@@ -136,7 +140,7 @@ class TestGaussianMixtureDataset:
             base_config.d, 
             base_config.N, 
             base_config.B, 
-            base_config.R, 
+            base_config.R_train, 
             device,
             label_flip_p=0.0
         )
@@ -159,15 +163,36 @@ class TestGaussianMixtureDataset:
         assert abs(target_flips - label_flip_p) < tolerance, \
             f"Target flip rate {target_flips:.3f} too far from target {label_flip_p}"
 
+def test_identity_memorization():
+    """Test that W=I gives perfect memorization in high-d low-N low-R regime"""
+    # Setup parameters for high-d, low-N regime
+    d = 1000  # High dimension
+    N = 3     # Small number of examples
+    B = 1000  # Large batch size
+    R_val = 1.0   # Low signal-to-noise ratio
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Create dataset
+    dataset = GaussianMixtureDataset(d, N, B, R_val, device)
+    context_x, context_y, _, _ = dataset[0]
+    
+    # Create model and set W to identity
+    model = LinearTransformer(d).to(device)
+    with torch.no_grad():
+        model.W.data = torch.eye(d, device=device)
+    
+    # Get predictions
+    preds = model.compute_in_context_preds(context_x, context_y)
+    accuracy = (preds == context_y).float().mean().item()
+    
+    print("\nIdentity Matrix Memorization Test:")
+    print(f"Accuracy: {accuracy:.2%}")
+    
+    assert accuracy > 0.95, f"Identity matrix should give near-perfect memorization, got {accuracy:.2%}"
+
 
 # Model Tests
 class TestLinearTransformer:
-    def test_initialization(self, base_config):
-        """Test model initialization"""
-        model = LinearTransformer(base_config.d)
-        w_std = torch.std(model.W).item()
-        assert 0.05 < w_std < 0.2, f"Weight initialization scale wrong: {w_std}"
-
     def test_forward_shapes(self, base_config, device):
         """Test forward pass shapes"""
         model = LinearTransformer(base_config.d)
@@ -195,7 +220,8 @@ class TestTraining:
         # Increase SNR for easier learning
         config = base_config
         config.d = d 
-        config.R = R 
+        config.R_train = R 
+        config.R_val = R
         
         trainer = Trainer(config)
         trainer.train()
@@ -218,8 +244,10 @@ class TestTraining:
         # Test with different SNRs
         for R in [2.0, 20.0]:
             config = base_config
-            config.R = R
-            config.d = 20
+            config.R_train = R
+            config.R_val = R
+            config.d = 40
+            config.B = 40
             config.max_steps = 1000
             
             trainer = Trainer(config)
@@ -241,7 +269,8 @@ class TestTraining:
         for N in [3, 80]:
             config = base_config
             config.N = N
-            config.R = config.d**0.25  # Small SNR to make task challenging
+            config.R_train = config.d**0.25  # Small SNR to make task challenging
+            config.R_val = config.R_train
             config.max_steps = 1000
             
             trainer = Trainer(config)
@@ -254,6 +283,30 @@ class TestTraining:
         # Check that larger context gives better accuracy
         assert results[80] > results[3] + 0.05, \
             f"Larger context should give better accuracy. Got N=80: {results[80]:.2%}, N=3: {results[3]:.2%}"
+
+    @pytest.mark.parametrize("label_flip_p", [0.0, 0.4])
+    def test_in_context_accuracy(self, base_config, label_flip_p):
+        """Test in-context accuracy computation"""
+        # Low SNR, high-D, low-N should have high in-context acc, regardless of label flipping
+        d = 1000
+        config = base_config
+        config.R_train = 10 * d**0.5
+        config.R_val = d**0.3
+        config.d = d
+        config.B = d
+        config.B_val = 200
+        config.N = 5
+        config.label_flip_p = label_flip_p
+        
+        trainer = Trainer(config)
+        trainer.train()
+        
+        final_in_context_acc = trainer.metrics['in_context_acc'][-1]
+        
+        print(f"label_flip_p={label_flip_p}, In-context train acc: {final_in_context_acc:.2%}")
+        
+        assert final_in_context_acc > 0.95, \
+            f"In-context accuracy too low: {final_in_context_acc:.2%}"
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

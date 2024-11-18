@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import math
 import numpy as np
 import wandb
 import os
@@ -17,19 +18,30 @@ class ExperimentConfig:
     N: int  # Number of examples per task
     B: int  # Number of tasks
     B_val: int # Number of validation tasks
-    R: float  # Signal-to-noise ratio
+    R_train: float  # Signal-to-noise ratio during training
+    R_val: float  # ...at test time
     max_steps: int  # Maximum training steps
     checkpoint_steps: List[int]  # Steps at which to save checkpoints
+    label_flip_p: float=0.0
     learning_rate: float = 1e-2
     use_cuda: bool = True  # Flag for using CUDA
     use_wandb: bool = False # Disable wandb by default
     wandb_project: Optional[str] = "linear-transformer"
+    save_checkpoints: bool = False
+    save_results: bool = False
     checkpoint_dir: str = "checkpoints"
     results_dir: str = "results"
+    experiment_name: Optional[str] = None
     
     def __post_init__(self):
         """Setup device based on CUDA availability"""
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.use_cuda else "cpu")
+
+        # Generate default experiment name if none provided
+        if self.experiment_name is None and self.save_results:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            self.experiment_name = f"d{self.d}_N{self.N}_B{self.B}_R{self.R}_{timestamp}"
+
 
 class GaussianMixtureDataset(Dataset):
     """Dataset class for generating Gaussian mixture data"""
@@ -109,20 +121,12 @@ class LinearTransformer(nn.Module):
         super().__init__()
         # Shape: (d, d)
         # Initialization shouldn't matter
-        self.W = nn.Parameter(torch.randn(d, d) * 0.1)
-        
-    def forward(self, context_x: torch.Tensor, context_y: torch.Tensor, 
-                target_x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            context_x: Shape (batch_size, N, d)
-            context_y: Shape (batch_size, N)
-            target_x: Shape (batch_size, d)
-        Returns:
-            prediction: Shape (batch_size,)
-        """
-        N = context_x.shape[1]
+        self.W = nn.Parameter(torch.zeros(d, d))
 
+    def _predict_single(self, context_x: torch.Tensor, context_y: torch.Tensor, 
+                    target_x: torch.Tensor) -> torch.Tensor:
+        """Helper function for single prediction using given context"""
+        N = context_x.shape[1]
         
         # Convert 0/1 labels to -1/+1 for the computation
         # Shape: (B, N) -> (B, N)
@@ -138,14 +142,49 @@ class LinearTransformer(nn.Module):
         # 2. Take inner product with target: (B, d) * (B, d) -> (B,)
         transformed = context_term @ self.W
         logits = (transformed * target_x).sum(dim=1)
-        
         return logits
+        
+    def forward(self, context_x: torch.Tensor, context_y: torch.Tensor, 
+                target_x: torch.Tensor) -> torch.Tensor:
+        """Standard forward pass for N examples ->N+1 prediction"""
+        return self._predict_single(context_x, context_y, target_x)
+    
+    def compute_in_context_preds(self, context_x: torch.Tensor, 
+                                context_y: torch.Tensor) -> torch.Tensor:
+        """
+        Compute predictions for each position in the context using the full context
+        For a sequence of examples (x_i, y_i), i <= N, we want to compute
+        x_k^T W m,
+        where m = (1/N) \sum_{i=1}^N y_i x_i.
+        Intuitively this is similar to an averaging operator.  If W is close to I, ambient dimension d is large,
+        N is small, and if signal-to-noise (R) is small, we should expect this to output y_k
+        for every single k.  In particular, "in-context training accuracy" should be 100% in this setting.
+        
+        Args:
+            context_x: Shape (batch_size, N, d)
+            context_y: Shape (batch_size, N)
+            
+        Returns:
+            predictions: Shape (batch_size, N) - predicted labels for each position
+        """
+        B, N, d = context_x.shape
+
+        context_y_signal = 2 * context_y - 1
+        context_term = (1/N) * torch.sum(context_y_signal[..., None] * context_x, dim=1)
+
+        transformed = context_term @ self.W # (B,d)
+        # Shapes (B, 1, d) @ (B, d, N) -> (B, 1, N)
+        logits = transformed[:, None, :] @ context_x.transpose(-1, -2)
+        predictions = (logits[:, 0, :] > 0).float()
+        return predictions
+        
 
 class Trainer:
     """Trainer class for linear transformer"""
     def __init__(self, config: ExperimentConfig):
         self.config = config
-        self.setup_directories()
+        if config.save_checkpoints or config.save_results:
+            self.setup_directories()
         
         # Initialize model and optimizer
         self.model = LinearTransformer(config.d).to(config.device)
@@ -156,10 +195,10 @@ class Trainer:
         
         # Initialize datasets
         self.train_dataset = GaussianMixtureDataset(
-            config.d, config.N, config.B, config.R, config.device, is_validation=False
+            config.d, config.N, config.B, config.R_train, config.device, is_validation=False, label_flip_p=0.0 # no noise during pre-training
         )
         self.val_dataset = GaussianMixtureDataset(
-            config.d, config.N, config.B, config.R, config.device, is_validation=True
+            config.d, config.N, config.B, config.R_val, config.device, is_validation=True, label_flip_p=config.label_flip_p
         )
 
         self.train_loader = DataLoader(
@@ -182,6 +221,7 @@ class Trainer:
             'step': [], 
             'train_loss': [], 
             'train_acc': [],
+            'in_context_acc': [],
             'val_loss': [],
             'val_acc': [],
             'batch_time': [],
@@ -205,8 +245,12 @@ class Trainer:
                 
                 # Compute accuracy
                 val_acc = ((pred > 0).float() == target_y).float().mean()
+
+                # Compute in-context training accuracy
+                in_context_preds = self.model.compute_in_context_preds(context_x, context_y)
+                in_context_acc = (in_context_preds == context_y).float().mean()
                 
-                return val_loss.item(), val_acc.item()
+                return val_loss.item(), val_acc.item(), in_context_acc.item()
         
     def setup_directories(self):
         """Create directories for checkpoints and results"""
@@ -234,6 +278,9 @@ class Trainer:
     
     def save_checkpoint(self, step: int):
         """Save model checkpoint"""
+        if not self.config.save_checkpoints:
+            return 
+
         checkpoint = {
             'step': step,
             'model_state_dict': self.model.state_dict(),
@@ -255,9 +302,33 @@ class Trainer:
         
     def save_metrics(self):
         """Save metrics to CSV"""
+        if not self.config.save_results:
+            return 
+
+        # Convert metrics dict to DataFrame
         df = pd.DataFrame(self.metrics)
-        path = os.path.join(self.config.results_dir, 'metrics.csv')
+        
+        # Add experiment parameters as columns
+        df['experiment_name'] = self.config.experiment_name
+        df['timestamp'] = time.strftime("%Y-%m-%d %H:%M:%S")
+        df['d'] = self.config.d
+        df['N'] = self.config.N
+        df['B'] = self.config.B
+        df['R'] = self.config.R
+        
+        # Create filename with experiment name
+        filename = f"metrics_{self.config.experiment_name}.csv"
+        path = os.path.join(self.config.results_dir, filename)
+        
+        # Save to CSV
         df.to_csv(path, index=False)
+        
+        # Optionally, also append to a master results file
+        master_path = os.path.join(self.config.results_dir, "all_results.csv")
+        if os.path.exists(master_path):
+            df.to_csv(master_path, mode='a', header=False, index=False)
+        else:
+            df.to_csv(master_path, index=False)
         
     def train(self):
         """Training loop with timing measurements"""
@@ -297,7 +368,7 @@ class Trainer:
                 train_acc = ((pred > 0).float() == target_y).float().mean()
 
                 # Compute validation metrics
-                val_loss, val_acc = self.evaluate()
+                val_loss, val_acc, in_context_acc = self.evaluate()
                 
                 # Compute timing metrics
                 batch_time = time.time() - batch_start_time
@@ -310,6 +381,7 @@ class Trainer:
                 self.metrics['train_acc'].append(train_acc.item())
                 self.metrics['val_loss'].append(val_loss)
                 self.metrics['val_acc'].append(val_acc)
+                self.metrics['in_context_acc'].append(in_context_acc)
                 self.metrics['batch_time'].append(batch_time)
                 self.metrics['samples_per_second'].append(avg_samples_per_second)
                 
@@ -317,8 +389,9 @@ class Trainer:
                     wandb.log({
                         'train_loss': train_loss.item(),
                         'train_acc': train_acc.item(),
-                        'val_loss': val_loss.item(),
-                        'val_acc': val_acc.item(),
+                        'val_loss': val_loss,
+                        'val_acc': val_acc,
+                        'in_context_acc_acc': in_context_acc,
                         'batch_time': batch_time,
                         'samples_per_second': avg_samples_per_second,
                         'step': step
@@ -329,8 +402,9 @@ class Trainer:
                     print(f"Step {step}/{self.config.max_steps} | "
                           f"Train Loss: {train_loss.item():.4f} | "
                           f"Train Acc: {train_acc.item():.4f} | "
-                          f"Val Loss: {train_loss.item():.4f} | "
-                          f"Val Acc: {train_acc.item():.4f} | "
+                          f"Val Loss: {val_loss:.4f} | "
+                          f"Val Acc: {val_acc:.4f} | "
+                          f"In-context Acc: {in_context_acc:.4f} | "
                           f"Batch time: {batch_time*1000:.2f}ms | "
                           f"Samples/sec: {avg_samples_per_second:.2f}")
                 
@@ -349,6 +423,7 @@ class Trainer:
         print(f"Total training time: {total_time:.2f} seconds")
         print(f"Final train accuracy: {self.metrics['train_acc'][-1]:.4f}")
         print(f"Final validation accuracy: {self.metrics['val_acc'][-1]:.4f}") 
+        print(f"Final in-context accuracy: {self.metrics['in_context_acc'][-1]:.4f}") 
         print(f"Average samples/second: {num_samples/total_time:.2f}")
         print(f"Average batch time: {np.mean(self.metrics['batch_time'])*1000:.2f}ms")
         
@@ -371,10 +446,14 @@ if __name__ == "__main__":
                     d=d,
                     N=40,
                     B=B,
-                    R=R,
+                    R_train=R,
+                    R_val=R,
                     max_steps=12800,
                     checkpoint_steps=[100, 400, 1600, 6400, 12800],
-                    use_cuda=True  # Set to False to force CPU usage
+                    use_cuda=True,  # Set to False to force CPU usage
+                    save_checkpoints=False,
+                    save_results=False,
+                    experiment_name='high_d_test'
                 )
                 
                 trainer = Trainer(config)
