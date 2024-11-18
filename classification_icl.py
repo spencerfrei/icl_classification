@@ -33,13 +33,15 @@ class ExperimentConfig:
 
 class GaussianMixtureDataset(Dataset):
     """Dataset class for generating Gaussian mixture data"""
-    def __init__(self, d: int, N: int, B: int, R: float, device: torch.device, is_validation: bool=False):
+    def __init__(self, d: int, N: int, B: int, R: float, device: torch.device, is_validation: bool=False, label_flip_p: float =0.0):
         self.d = d
         self.N = N 
         self.B = B
         self.R = R
         self.device = device
         self.is_validation = is_validation
+        self.label_flip_p = label_flip_p
+        assert 0 <= label_flip_p < 0.5, f'label flip probab must be in [0,1/2), got {label_flip_p}'
 
         with torch.random.fork_rng():
             if is_validation:
@@ -64,8 +66,9 @@ class GaussianMixtureDataset(Dataset):
         # Normalize and scale - Shape: (B, d)
         mus = mus / torch.norm(mus, dim=1, keepdim=True) * self.R
         
-        # Generate all labels at once - Shape: (B, N+1)
+        # Generate clean labels at once - Shape: (B, N+1)
         y_all = (torch.rand(self.B, self.N + 1, device=self.device) > 0.5).float()
+
         
         # Convert to {-1, 1} for signal generation - Shape: (B, N+1)
         y_signal = 2 * y_all - 1
@@ -78,6 +81,11 @@ class GaussianMixtureDataset(Dataset):
         # y_signal[..., None] shape: (B, N+1, 1)
         # Result shape: (B, N+1, d)
         x = y_signal[..., None] * mus[:, None, :] + z
+
+        # Flip labels with probability label_flip_p
+        if self.label_flip_p:
+            flip_mask = (torch.rand(self.B, self.N + 1, device=self.device) < self.label_flip_p)
+            y_all = torch.where(flip_mask, 1 - y_all, y_all)
         
         # Split into context and target
         context_x = x[:, :self.N, :]  # (B, N, d)

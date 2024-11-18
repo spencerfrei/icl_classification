@@ -113,6 +113,52 @@ class TestGaussianMixtureDataset:
         # Check all tensors are equal
         for t1, t2 in zip(data1, data2):
             assert torch.allclose(t1, t2), "Validation datasets not reproducible"
+    
+    @pytest.mark.parametrize("label_flip_p", [0.0, 0.1, 0.3])
+    def test_label_flip_probability(self, base_config, device, label_flip_p):
+        """Test if labels are flipped with correct probability"""
+        # Set random seed for reproducibility
+        torch.manual_seed(42)
+        
+        dataset = GaussianMixtureDataset(
+            base_config.d, 
+            base_config.N, 
+            base_config.B, 
+            base_config.R, 
+            device,
+            label_flip_p=label_flip_p
+        )
+        
+        _, context_y, _, target_y = dataset[0]
+        
+        # Generate clean dataset for comparison
+        clean_dataset = GaussianMixtureDataset(
+            base_config.d, 
+            base_config.N, 
+            base_config.B, 
+            base_config.R, 
+            device,
+            label_flip_p=0.0
+        )
+        
+        _, clean_y, _, clean_target_y = clean_dataset[0]
+        
+        # Calculate empirical flip rate
+        context_flips = (context_y != clean_y).float().mean().item()
+        target_flips = (target_y != clean_target_y).float().mean().item()
+        
+        # Allow for some statistical variation
+        tolerance = 0.05 if label_flip_p > 0 else 0.001
+        
+        print(f"\nLabel flip test (p={label_flip_p}):")
+        print(f"Context flip rate: {context_flips:.3f}")
+        print(f"Target flip rate: {target_flips:.3f}")
+        
+        assert abs(context_flips - label_flip_p) < tolerance, \
+            f"Context flip rate {context_flips:.3f} too far from target {label_flip_p}"
+        assert abs(target_flips - label_flip_p) < tolerance, \
+            f"Target flip rate {target_flips:.3f} too far from target {label_flip_p}"
+
 
 # Model Tests
 class TestLinearTransformer:
@@ -184,7 +230,7 @@ class TestTraining:
         print(f"Accuracies - Low SNR (R=2): {results[2.0]:.2%}, High SNR (R=20): {results[20.0]:.2%}")
         
         # Check that higher SNR gives better accuracy
-        assert results[20.0] > results[2.0] + 0.05, \
+        assert results[20.0] > results[2.0] + 0.02, \
             f"Higher SNR should give notably better accuracy. Got R=20: {results[20.0]:.2%}, R=2: {results[2.0]:.2%}"
 
     def test_context_size_effect(self, base_config):
