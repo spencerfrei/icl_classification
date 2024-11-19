@@ -171,10 +171,16 @@ class LinearTransformer(nn.Module):
         """
         B, N, d = context_x.shape
 
+        # Normalize each input vector - output is homogeneous in x, so this won't affect
+        # decision boundary, and we are only using this at test time so no change in optimization
+        context_x = context_x / torch.norm(context_x, dim=2, keepdim=True)
         context_y_signal = 2 * context_y - 1
-        context_term = (1/N) * torch.sum(context_y_signal[..., None] * context_x, dim=1)
+        # (B, N, 1) * (B, N, d) -> (B, N, d) -> (B, d)
+        hat_mu = (1/N) * torch.sum(context_y_signal[..., None] * context_x, dim=1)
 
-        transformed = context_term @ self.W # (B,d)
+        # compute hat_mu_\tau^T W for each \tau = 1, ... , B
+        transformed = hat_mu @ self.W # (B,d)
+        # now compute hat_mu_\tau^T W x_i for i=1, ..., N
         # Shapes (B, 1, d) @ (B, d, N) -> (B, 1, N)
         logits = transformed[:, None, :] @ context_x.transpose(-1, -2)
         predictions = (logits[:, 0, :] > 0).float()

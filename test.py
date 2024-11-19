@@ -158,33 +158,6 @@ class TestGaussianMixtureDataset:
         assert abs(target_flips - label_flip_p) < tolerance, \
             f"Target flip rate {target_flips:.3f} too far from target {label_flip_p}"
 
-def test_identity_memorization():
-    """Test that W=I gives perfect memorization in high-d low-N low-R regime"""
-    # Setup parameters for high-d, low-N regime
-    d = 1000  # High dimension
-    N = 3     # Small number of examples
-    B = 1000  # Large batch size
-    R_val = 1.0   # Low signal-to-noise ratio
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Create dataset
-    dataset = GaussianMixtureDataset(d, N, B, R_val)
-    context_x, context_y, _, _ = [t.to(device) for t in dataset[0]]
-    
-    # Create model and set W to identity
-    model = LinearTransformer(d).to(device)
-    with torch.no_grad():
-        model.W.data = torch.eye(d, device=device)
-    
-    # Get predictions
-    preds = model.compute_in_context_preds(context_x, context_y)
-    accuracy = (preds == context_y).float().mean().item()
-    
-    print("\nIdentity Matrix Memorization Test:")
-    print(f"Accuracy: {accuracy:.2%}")
-    
-    assert accuracy > 0.95, f"Identity matrix should give near-perfect memorization, got {accuracy:.2%}"
-
 
 # Model Tests
 class TestLinearTransformer:
@@ -203,6 +176,33 @@ class TestLinearTransformer:
         # Test output magnitude
         output_std = torch.std(output).item()
         assert output_std < 10.0, f"Output magnitude too large: std={output_std}"
+
+def test_identity_memorization():
+    """Test that W=I gives perfect memorization in high-d low-N low-R regime"""
+    # Setup parameters for high-d, low-N regime
+    d = 1000  # High dimension
+    N = 3     # Small number of examples
+    B = 1000  # Large batch size
+    R_val = 1.0   # Low signal-to-noise ratio
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Create dataset
+    dataset = GaussianMixtureDataset(d, N, B, R_val, label_flip_p=0.15)
+    context_x, context_y, _, _ = [t.to(device) for t in dataset[0]]
+    
+    # Create model and set W to identity
+    model = LinearTransformer(d).to(device)
+    with torch.no_grad():
+        model.W.data = torch.eye(d, device=device)
+    
+    # Get predictions
+    preds = model.compute_in_context_preds(context_x, context_y)
+    accuracy = (preds == context_y).float().mean().item()
+    
+    print("\nIdentity Matrix Memorization Test:")
+    print(f"Accuracy: {accuracy:.2%}")
+    
+    assert accuracy > 0.95, f"Identity matrix should give near-perfect memorization, got {accuracy:.2%}"
 
 # Training Tests
 class TestTraining:
