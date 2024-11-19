@@ -471,13 +471,13 @@ def run_single_experiment(params, base_results_dir: str, use_cuda: bool = False)
     # Configure experiment
     config = ExperimentConfig(
         d=d,
-        N=40,
+        N=40, # with R_train = 5 sqrt(d), N = \Omega(1) suffices
         B=B,
-        B_val=500,  # Set validation batch size equal to training
+        B_val=50, # don't really need validation data since we'll be evaluating checkpoints later
         R_train=R_train,
         R_val=R_val,
         max_steps=steps,
-        checkpoint_steps=[steps-1],
+        checkpoint_steps=[steps],
         use_cuda=use_cuda,
         save_checkpoints=True,
         save_results=True,
@@ -558,14 +558,14 @@ if __name__ == "__main__":
     
     # Run hyperparameter search
     # run_hyperparameter_search()  
-    d = 2500
-    R_train = 5 * d**0.5
-    R_vals = [d**0.25, 5 * np.sqrt(d)]
+    # d_list = [10, 50, 100, 200, 400, 600, 800, 1000, 1250, 1500]
+    d_list = [2000]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_results_dir = f"results_{timestamp}"
     # os.makedirs(base_results_dir, exist_ok=True)
-    B_values = [d]
-    for B in B_values:
-        for R_val in R_vals:
-            params = (d, B, R_train, R_val, 300)
-            run_single_experiment(params=params, base_results_dir=base_results_dir, use_cuda=True)
+
+    for d in d_list:
+        B = d
+        R_train = 5 * d**0.5
+        params = (d, B, R_train, d**0.35, 300)
+        run_single_experiment(params=params, base_results_dir=base_results_dir, use_cuda=True)
