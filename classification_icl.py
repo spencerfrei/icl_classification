@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import math
 import numpy as np
 import wandb
 import os
@@ -10,6 +9,10 @@ import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from torch.utils.data import Dataset, DataLoader
+from datetime import datetime
+import multiprocessing as mp 
+from functools import partial 
+import filelock 
 
 @dataclass
 class ExperimentConfig:
@@ -45,12 +48,11 @@ class ExperimentConfig:
 
 class GaussianMixtureDataset(Dataset):
     """Dataset class for generating Gaussian mixture data"""
-    def __init__(self, d: int, N: int, B: int, R: float, device: torch.device, is_validation: bool=False, label_flip_p: float =0.0):
+    def __init__(self, d: int, N: int, B: int, R: float, is_validation: bool=False, label_flip_p: float =0.0):
         self.d = d
         self.N = N 
         self.B = B
         self.R = R
-        self.device = device
         self.is_validation = is_validation
         self.label_flip_p = label_flip_p
         assert 0 <= label_flip_p < 0.5, f'label flip probab must be in [0,1/2), got {label_flip_p}'
@@ -74,19 +76,19 @@ class GaussianMixtureDataset(Dataset):
             target_y: Shape (B)
         """
         # Generate mean vectors for all tasks - Shape: (B, d)
-        mus = torch.randn(self.B, self.d, device=self.device)
+        mus = torch.randn(self.B, self.d)
         # Normalize and scale - Shape: (B, d)
         mus = mus / torch.norm(mus, dim=1, keepdim=True) * self.R
         
         # Generate clean labels at once - Shape: (B, N+1)
-        y_all = (torch.rand(self.B, self.N + 1, device=self.device) > 0.5).float()
+        y_all = (torch.rand(self.B, self.N + 1) > 0.5).float()
 
         
         # Convert to {-1, 1} for signal generation - Shape: (B, N+1)
         y_signal = 2 * y_all - 1
         
         # Generate noise - Shape: (B, N+1, d)
-        z = torch.randn(self.B, self.N + 1, self.d, device=self.device)
+        z = torch.randn(self.B, self.N + 1, self.d)
         
         # Broadcast for multiplication:
         # mus[:, None, :] shape: (B, 1, d)
@@ -96,7 +98,7 @@ class GaussianMixtureDataset(Dataset):
 
         # Flip labels with probability label_flip_p
         if self.label_flip_p:
-            flip_mask = (torch.rand(self.B, self.N + 1, device=self.device) < self.label_flip_p)
+            flip_mask = (torch.rand(self.B, self.N + 1) < self.label_flip_p)
             y_all = torch.where(flip_mask, 1 - y_all, y_all)
         
         # Split into context and target
@@ -195,10 +197,10 @@ class Trainer:
         
         # Initialize datasets
         self.train_dataset = GaussianMixtureDataset(
-            config.d, config.N, config.B, config.R_train, config.device, is_validation=False, label_flip_p=0.0 # no noise during pre-training
+            config.d, config.N, config.B, config.R_train, is_validation=False, label_flip_p=0.0 # no noise during pre-training
         )
         self.val_dataset = GaussianMixtureDataset(
-            config.d, config.N, config.B, config.R_val, config.device, is_validation=True, label_flip_p=config.label_flip_p
+            config.d, config.N, config.B, config.R_val, is_validation=True, label_flip_p=config.label_flip_p
         )
 
         self.train_loader = DataLoader(
@@ -236,7 +238,7 @@ class Trainer:
         self.model.eval()
         with torch.no_grad():
             for batch in self.val_loader:
-                context_x, context_y, target_x, target_y = batch
+                context_x, context_y, target_x, target_y = [t.to(self.config.device) for t in batch]
                 
                 # Forward pass
                 pred = self.model(context_x, context_y, target_x)
@@ -288,7 +290,8 @@ class Trainer:
             'metrics': self.metrics,
             'config': self.config
         }
-        path = os.path.join(self.config.checkpoint_dir, f'checkpoint_step_{step}.pt')
+        path = os.path.join(self.config.checkpoint_dir, f'checkpoint_{self.config.experiment_name}_step_{step}.pt')
+        print(f'Saving checkpoint at {path}')
         torch.save(checkpoint, path)
         
     def load_checkpoint(self, step: int):
@@ -314,21 +317,32 @@ class Trainer:
         df['d'] = self.config.d
         df['N'] = self.config.N
         df['B'] = self.config.B
-        df['R'] = self.config.R
+        df['R_train'] = self.config.R_train
         
         # Create filename with experiment name
         filename = f"metrics_{self.config.experiment_name}.csv"
         path = os.path.join(self.config.results_dir, filename)
+
+            
+        # Create lock file path
+        lock_path = os.path.join(self.config.results_dir, "results.lock")
         
-        # Save to CSV
+        # Save individual experiment results (no lock needed as filename is unique)
         df.to_csv(path, index=False)
         
-        # Optionally, also append to a master results file
-        master_path = os.path.join(self.config.results_dir, "all_results.csv")
-        if os.path.exists(master_path):
-            df.to_csv(master_path, mode='a', header=False, index=False)
-        else:
-            df.to_csv(master_path, index=False)
+        # Safely append to master results file using file lock
+        with filelock.FileLock(lock_path):
+            master_path = os.path.join(self.config.results_dir, "all_results.csv")
+            if os.path.exists(master_path):
+                # Read existing data to get column order
+                existing_df = pd.read_csv(master_path)
+                # Ensure columns match
+                df = df[existing_df.columns]
+                # Append without writing header
+                df.to_csv(master_path, mode='a', header=False, index=False)
+            else:
+                # First time creating the file
+                df.to_csv(master_path, index=False)
         
     def train(self):
         """Training loop with timing measurements"""
@@ -352,7 +366,7 @@ class Trainer:
                 # context_y: (batch_size, N)
                 # target_x: (batch_size, d)
                 # target_y: (batch_size,)
-                context_x, context_y, target_x, target_y = batch
+                context_x, context_y, target_x, target_y = [t.to(self.config.device) for t in batch]
                 
                 # Forward pass - pred shape: (batch_size,)
                 pred = self.model(context_x, context_y, target_x)
@@ -411,7 +425,6 @@ class Trainer:
                 # Save checkpoint if needed
                 if step in self.config.checkpoint_steps:
                     self.save_checkpoint(step)
-                    print(f"Saved checkpoint at step {step}")
                     
                 step += 1
                 if step >= self.config.max_steps:
@@ -433,28 +446,120 @@ class Trainer:
         if self.config.use_wandb:
             wandb.finish()
 
-if __name__ == "__main__":
+            
+
+def run_single_experiment(params, base_results_dir: str, use_cuda: bool = False):
+    """
+    Run a single experiment with given hyperparameters.
+    
+    Args:
+        params: tuple of (d, B, R_train, R_val, steps) hyperparameters
+        base_results_dir: base directory for results
+    """
+    d, B, R_train, R_val, steps = params
+    
+    # Create unique experiment name based on hyperparameters
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_name = f"d{d}_B{B}_R{int(R_val)}_{timestamp}"
+    
+    # Configure experiment
+    config = ExperimentConfig(
+        d=d,
+        N=40,
+        B=B,
+        B_val=500,  # Set validation batch size equal to training
+        R_train=R_train,
+        R_val=R_val,
+        max_steps=steps,
+        checkpoint_steps=[steps-1],
+        use_cuda=use_cuda,
+        save_checkpoints=True,
+        save_results=True,
+        results_dir=base_results_dir,
+        experiment_name=experiment_name
+    )
+    
+    # Initialize and run trainer
+    trainer = Trainer(config)
+    trainer.train()
+    
+    return experiment_name
+
+def run_hyperparameter_search(num_processes: int = None):
+    """
+    Run hyperparameter search using multiprocessing.
+    
+    Args:
+        num_processes: Number of processes to use. If None, uses CPU count.
+    """
+    # Create base results directory with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_results_dir = f"results_{timestamp}"
+    os.makedirs(base_results_dir, exist_ok=True)
+    
+    # Create master results file with lock
+    master_results_path = os.path.join(base_results_dir, "all_results.csv")
+    lock_path = os.path.join(base_results_dir, "results.lock")
+    
+    # Generate hyperparameter combinations
     dimensions = [50, 500, 5000]
+    param_combinations = []
+    steps = 500
+    
     for d in dimensions:
-        B_values = [int(d**0.2), int(d**0.6), d, int(d**1.4)]
-        R_values = [5 * d**0.25, 5 * np.sqrt(d)]
+        B_values = [d]
+        R_train = 5 * d**0.5
+        R_vals = [5 * d**0.25, 5 * np.sqrt(d)]
         for B in B_values:
-            for R in R_values:
-                print(f"\nStarting experiment with d={d}, B={B}, R={R}")
-                
-                config = ExperimentConfig(
-                    d=d,
-                    N=40,
-                    B=B,
-                    R_train=R,
-                    R_val=R,
-                    max_steps=12800,
-                    checkpoint_steps=[100, 400, 1600, 6400, 12800],
-                    use_cuda=True,  # Set to False to force CPU usage
-                    save_checkpoints=False,
-                    save_results=False,
-                    experiment_name='high_d_test'
-                )
-                
-                trainer = Trainer(config)
-                trainer.train()
+            for R_val in R_vals:
+                param_combinations.append((d, B, R_train, R_val, steps))
+    
+    # Set up multiprocessing
+    if num_processes is None:
+        num_processes = mp.cpu_count() - 2
+    
+    print(f"Starting hyperparameter search with {num_processes} processes")
+    print(f"Total experiments to run: {len(param_combinations)}")
+    print(f"Results will be saved in: {base_results_dir}")
+    
+    # Create partial function with fixed base_results_dir
+    run_experiment = partial(run_single_experiment, base_results_dir=base_results_dir)
+    
+    # Run experiments in parallel
+    with mp.Pool(processes=num_processes) as pool:
+        experiment_names = pool.map(run_experiment, param_combinations)
+    
+    # Combine all individual results files into master results file
+    with filelock.FileLock(lock_path):
+        all_results = []
+        for exp_name in experiment_names:
+            results_path = os.path.join(base_results_dir, f"metrics_{exp_name}.csv")
+            if os.path.exists(results_path):
+                df = pd.read_csv(results_path)
+                all_results.append(df)
+        
+        if all_results:
+            combined_results = pd.concat(all_results, ignore_index=True)
+            combined_results.to_csv(master_results_path, index=False)
+    
+    print("\nHyperparameter search completed!")
+    print(f"Combined results saved to: {master_results_path}")
+
+
+if __name__ == "__main__":
+    # Set up torch multiprocessing method
+    mp.set_start_method('spawn')  # Required for torch multiprocessing
+    
+    # Run hyperparameter search
+    # run_hyperparameter_search()  
+    d = 2500
+    R_train = 5 * d**0.5
+    R_vals = [d**0.25, 5 * np.sqrt(d)]
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_results_dir = f"results_{timestamp}"
+    # os.makedirs(base_results_dir, exist_ok=True)
+    B_values = [d]
+    for B in B_values:
+        for R_val in R_vals:
+            params = (d, B, R_train, R_val, 300)
+            run_single_experiment(params=params, base_results_dir=base_results_dir, use_cuda=True)

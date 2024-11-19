@@ -43,7 +43,6 @@ class TestGaussianMixtureDataset:
             base_config.N, 
             base_config.B, 
             base_config.R_train, 
-            device
         )
         
         context_x, context_y, target_x, target_y = dataset[0]
@@ -60,7 +59,6 @@ class TestGaussianMixtureDataset:
             base_config.N, 
             base_config.B, 
             base_config.R_train, 
-            device
         )
         
         context_x, context_y, target_x, target_y = dataset[0]
@@ -76,7 +74,6 @@ class TestGaussianMixtureDataset:
             base_config.N, 
             base_config.B, 
             base_config.R_train, 
-            device
         )
         
         context_x, context_y, _, _ = dataset[0]
@@ -103,11 +100,11 @@ class TestGaussianMixtureDataset:
         """Test if validation dataset is reproducible"""
         dataset1 = GaussianMixtureDataset(
             base_config.d, base_config.N, base_config.B, base_config.R_train, 
-            device, is_validation=True
+            is_validation=True
         )
         dataset2 = GaussianMixtureDataset(
             base_config.d, base_config.N, base_config.B, base_config.R_train, 
-            device, is_validation=True
+            is_validation=True
         )
         
         # Get data from both datasets
@@ -129,7 +126,6 @@ class TestGaussianMixtureDataset:
             base_config.N, 
             base_config.B, 
             base_config.R_train, 
-            device,
             label_flip_p=label_flip_p
         )
         
@@ -141,7 +137,6 @@ class TestGaussianMixtureDataset:
             base_config.N, 
             base_config.B, 
             base_config.R_train, 
-            device,
             label_flip_p=0.0
         )
         
@@ -173,8 +168,8 @@ def test_identity_memorization():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Create dataset
-    dataset = GaussianMixtureDataset(d, N, B, R_val, device)
-    context_x, context_y, _, _ = dataset[0]
+    dataset = GaussianMixtureDataset(d, N, B, R_val)
+    context_x, context_y, _, _ = [t.to(device) for t in dataset[0]]
     
     # Create model and set W to identity
     model = LinearTransformer(d).to(device)
