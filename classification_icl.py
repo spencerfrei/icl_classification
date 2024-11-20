@@ -563,6 +563,7 @@ if __name__ == "__main__":
     USE_CPU = False
 
     if torch.cuda.is_available() or not USE_CPU:
+        print('Running sequential GPU experiments')
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_results_dir = f"results_{timestamp}"
 
@@ -585,5 +586,6 @@ if __name__ == "__main__":
             run_single_experiment(params=params, base_results_dir=base_results_dir, use_cuda=True)
 
     else: 
+        print('Running parallel CPU experiments')
         run_parallel_cpu_experiments()  
         
