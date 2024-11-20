@@ -463,6 +463,7 @@ def run_single_experiment(params, base_results_dir: str, use_cuda: bool = False)
         base_results_dir: base directory for results
     """
     d, B, R_train, R_val, steps = params
+    # (dimension, batch size = tasks, R for training, \tilde R for validation, num steps)
     
     # Create unique experiment name based on hyperparameters
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -493,7 +494,7 @@ def run_single_experiment(params, base_results_dir: str, use_cuda: bool = False)
 
 def run_hyperparameter_search(num_processes: int = None):
     """
-    Run hyperparameter search using multiprocessing.
+    Run hyperparameter search using multiprocessing (CPU only).
     
     Args:
         num_processes: Number of processes to use. If None, uses CPU count.
@@ -508,17 +509,22 @@ def run_hyperparameter_search(num_processes: int = None):
     lock_path = os.path.join(base_results_dir, "results.lock")
     
     # Generate hyperparameter combinations
-    dimensions = [50, 500, 5000]
     param_combinations = []
-    steps = 500
-    
+    steps = 300
+    dimensions = [10, 50, 100, 200, 400, 600, 800, 1000, 1250, 1500]
+    # os.makedirs(base_results_dir, exist_ok=True)
+
+    # First do d-varying
     for d in dimensions:
-        B_values = [d]
+        B = d
         R_train = 5 * d**0.5
-        R_vals = [5 * d**0.25, 5 * np.sqrt(d)]
-        for B in B_values:
-            for R_val in R_vals:
-                param_combinations.append((d, B, R_train, R_val, steps))
+        param_combinations.append((d, B, R_train, d ** 0.3, steps))
+
+    # Then compute d-fixed, vary B
+    d = 1000
+    B_list = [int(d**0.1), int(d**0.3), int(d**0.5), int(d**0.7), int(d**0.9)]
+    for B in B_list:
+        param_combinations.append((d, B, R_train, d**0.3, steps))
     
     # Set up multiprocessing
     if num_processes is None:
@@ -553,19 +559,27 @@ def run_hyperparameter_search(num_processes: int = None):
 
 
 if __name__ == "__main__":
-    # Set up torch multiprocessing method
-    mp.set_start_method('spawn')  # Required for torch multiprocessing
-    
-    # Run hyperparameter search
+    # if using CPU only, you might want to do multiprocessing 
+    # (if you have GPU, probably faster to just use single-proc GPU)
     # run_hyperparameter_search()  
-    # d_list = [10, 50, 100, 200, 400, 600, 800, 1000, 1250, 1500]
-    d_list = [2000]
+    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_results_dir = f"results_{timestamp}"
+
+    # First get collection of varying-d, B fixed
+    d_list = [10, 50, 100, 200, 400, 600, 800, 1000, 1250, 1500]
     # os.makedirs(base_results_dir, exist_ok=True)
 
     for d in d_list:
         B = d
+        R_train = 5 * d**0.5
+        params = (d, B, R_train, d**0.35, 300)
+        run_single_experiment(params=params, base_results_dir=base_results_dir, use_cuda=True)
+
+    # Then compute d-fixed, vary B
+    d = 1000
+    B_list = [int(d**0.1), int(d**0.3), int(d**0.5), int(d**0.7), int(d**0.9)]
+    for B in B_list:
         R_train = 5 * d**0.5
         params = (d, B, R_train, d**0.35, 300)
         run_single_experiment(params=params, base_results_dir=base_results_dir, use_cuda=True)
