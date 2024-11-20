@@ -492,7 +492,7 @@ def run_single_experiment(params, base_results_dir: str, use_cuda: bool = False)
     
     return experiment_name
 
-def run_hyperparameter_search(num_processes: int = None):
+def run_parallel_cpu_experiments(num_processes: int = None):
     """
     Run hyperparameter search using multiprocessing (CPU only).
     
@@ -535,7 +535,7 @@ def run_hyperparameter_search(num_processes: int = None):
     print(f"Results will be saved in: {base_results_dir}")
     
     # Create partial function with fixed base_results_dir
-    run_experiment = partial(run_single_experiment, base_results_dir=base_results_dir)
+    run_experiment = partial(run_single_experiment, use_cuda=False, base_results_dir=base_results_dir)
     
     # Run experiments in parallel
     with mp.Pool(processes=num_processes) as pool:
@@ -559,27 +559,31 @@ def run_hyperparameter_search(num_processes: int = None):
 
 
 if __name__ == "__main__":
-    # if using CPU only, you might want to do multiprocessing 
-    # (if you have GPU, probably faster to just use single-proc GPU)
-    # run_hyperparameter_search()  
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_results_dir = f"results_{timestamp}"
+    # if using CPU only, you might want to do multiprocessing  - just run the following 
+    USE_CPU = False
 
-    # First get collection of varying-d, B fixed
-    d_list = [10, 50, 100, 200, 400, 600, 800, 1000, 1250, 1500]
-    # os.makedirs(base_results_dir, exist_ok=True)
+    if torch.cuda.is_available() or not USE_CPU:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_results_dir = f"results_{timestamp}"
 
-    for d in d_list:
-        B = d
-        R_train = 5 * d**0.5
-        params = (d, B, R_train, d**0.35, 300)
-        run_single_experiment(params=params, base_results_dir=base_results_dir, use_cuda=True)
+        # First get collection of varying-d, B fixed
+        d_list = [10, 50, 100, 200, 400, 600, 800, 1000, 1250, 1500]
+        # os.makedirs(base_results_dir, exist_ok=True)
 
-    # Then compute d-fixed, vary B
-    d = 1000
-    B_list = [int(d**0.1), int(d**0.3), int(d**0.5), int(d**0.7), int(d**0.9)]
-    for B in B_list:
-        R_train = 5 * d**0.5
-        params = (d, B, R_train, d**0.35, 300)
-        run_single_experiment(params=params, base_results_dir=base_results_dir, use_cuda=True)
+        for d in d_list:
+            B = d
+            R_train = 5 * d**0.5
+            params = (d, B, R_train, d**0.35, 300)
+            run_single_experiment(params=params, base_results_dir=base_results_dir, use_cuda=True)
+
+        # Then compute d-fixed, vary B
+        d = 1000
+        B_list = [int(d**0.1), int(d**0.3), int(d**0.5), int(d**0.7), int(d**0.9)]
+        for B in B_list:
+            R_train = 5 * d**0.5
+            params = (d, B, R_train, d**0.35, 300)
+            run_single_experiment(params=params, base_results_dir=base_results_dir, use_cuda=True)
+
+    else: 
+        run_parallel_cpu_experiments()  
+        
