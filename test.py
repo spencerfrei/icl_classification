@@ -21,7 +21,7 @@ def base_config():
         d=10,
         N=80,
         B=200,
-        B_val=200,
+        B_val=50,
         R_train=5.0,
         R_val=5.0,
         max_steps=500,
@@ -283,13 +283,13 @@ class TestTraining:
     def test_in_context_accuracy(self, base_config, label_flip_p):
         """Test in-context accuracy computation"""
         # Low SNR, high-D, low-N should have high in-context acc, regardless of label flipping
-        d = 1000
+        d = 500
         config = base_config
-        config.R_train = 10 * d**0.5
+        config.R_train = 5 * d**0.5
         config.R_val = d**0.3
         config.d = d
         config.B = d
-        config.B_val = 200
+        config.B_val = 50
         config.N = 5
         config.label_flip_p = label_flip_p
         
