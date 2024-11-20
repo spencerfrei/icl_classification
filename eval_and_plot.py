@@ -144,7 +144,7 @@ class CheckpointEvaluator:
                     color=opt_color, linestyle='-.', linewidth=2, 
                     label=f'Optimal Test ({optimal_acc:.2f})')
             
-            base_font = 16
+            base_font = 18
             if force_y_range:
                 plt.ylim(0.49, 1.01)
             plt.xlabel('Input Dimension (d)', fontsize = base_font+1)
@@ -283,11 +283,11 @@ class CheckpointEvaluator:
                     color='green', linestyle='-.', linewidth=2,
                     label=f'Optimal Test ({optimal_acc:.2f})')
             
-            base_font = 16
+            base_font = 18
             plt.ylim(0.49, 1.01)
-            plt.xlabel('Batch Size (B)', fontsize=base_font+1)
+            plt.xlabel('Tasks (B)', fontsize=base_font+1)
             plt.ylabel('Accuracy', fontsize=base_font+1)
-            plt.title(f'Performance vs Number of Tasks (B)\n (d=1000, $\\tilde R=d^{{{R_d_to_power}}}$, Seq. Length = {sequence_length}, Label Flip = {label_flip_p})', fontsize=base_font+2)
+            plt.title(f'Performance vs Number of Tasks ($\\tilde R=d^{{{R_d_to_power}}}$)\n(d=1000, Seq. Length = {sequence_length}, Label Flip = {label_flip_p})', fontsize=base_font+2)
             plt.grid(True, alpha=0.4, color='gray', linewidth=0.5)
             plt.xticks(fontsize=base_font)
             plt.yticks(fontsize=base_font)
@@ -301,7 +301,7 @@ class CheckpointEvaluator:
                 if not base_path.suffix:
                     base_path = base_path.with_suffix('.png')
                     
-                flip_specific_path = base_path.parent / f"{base_path.stem}_N{sequence_length}_p{label_flip_p}{base_path.suffix}"
+                flip_specific_path = base_path.parent / f"{base_path.stem}_N{sequence_length}_R{R_d_to_power}_p{label_flip_p}{base_path.suffix}"
                 plt.savefig(flip_specific_path, bbox_inches='tight', dpi=300)
                 print(f"Saved plot for label_flip_p={label_flip_p} to {flip_specific_path}")
             else:
@@ -333,19 +333,22 @@ def main():
     max_seq_length = 20
 
     # first run batch size results
-    
-    batch_results = evaluator.evaluate_batch_sizes(
-        dimension=1000,
-        max_seq_length=max_seq_length,
-        num_samples=2500,
-        R_d_to_power=0.3,
-    )
-    evaluator.plot_batch_size_curves(
-        batch_results,
-        sequence_length=max_seq_length,
-        save_path='plots/batch_size_curves.png',
-        R_d_to_power = 0.3,
-    )
+
+    R_d_to_powers = [0.1, 0.3, 0.6]
+
+    for R_d_to_power in R_d_to_powers:
+        batch_results = evaluator.evaluate_batch_sizes(
+            dimension=1000,
+            max_seq_length=max_seq_length,
+            num_samples=2500,
+            R_d_to_power=R_d_to_power,
+        )
+        evaluator.plot_batch_size_curves(
+            batch_results,
+            sequence_length=max_seq_length,
+            save_path='plots/batch_size_curves.png',
+            R_d_to_power = R_d_to_power,
+        )
 
     # then run high-dimensionality results
 
@@ -359,12 +362,16 @@ def main():
         for d in dimensions:
             matches = list(Path('checkpoints/').glob(f"checkpoint_d{d}*.pt"))
             if matches:
-                R = d**R_d_to_power
-                # Use default label flips from evaluator
-                results = evaluator.evaluate_checkpoint(str(matches[0]), max_seq_length, R)
-                all_results.update(results)
+                for checkpoint_path in matches: 
+                    batch_str = str(checkpoint_path)
+                    batch_size = int(batch_str[batch_str.find('B')+1:].split('_')[0])
+                    R = d**R_d_to_power
+                    if batch_size == d: # only considering those where B=d
+                        results = evaluator.evaluate_checkpoint(checkpoint_path, max_seq_length, R)
+                        all_results.update(results)
         
         evaluator.plot_dimension_curves(all_results, sequence_length=max_seq_length, save_path="plots/dimension_curves.png", R_d_to_power=R_d_to_power, force_y_range = True)
+
 
 if __name__ == "__main__":
     main()
