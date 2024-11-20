@@ -57,13 +57,12 @@ class GaussianMixtureDataset(Dataset):
         self.label_flip_p = label_flip_p
         assert 0 <= label_flip_p < 0.5, f'label flip probab must be in [0,1/2), got {label_flip_p}'
 
-        with torch.random.fork_rng():
-            if is_validation:
-                # use differents eed for validation data
-                torch.manual_seed(42)
-            
-            # Generate all data at once and store in tensors
-            self.context_x, self.context_y, self.target_x, self.target_y = self._generate_data()
+        if is_validation:
+            # use differents eed for validation data
+            torch.manual_seed(42)
+        
+        # Generate all data at once and store in tensors
+        self.context_x, self.context_y, self.target_x, self.target_y = self._generate_data()
     
     def _generate_data(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -562,7 +561,7 @@ if __name__ == "__main__":
     # if using CPU only, you might want to do multiprocessing  - just run the following 
     USE_CPU = False
 
-    if torch.cuda.is_available() or not USE_CPU:
+    if torch.cuda.is_available() and not USE_CPU:
         print('Running sequential GPU experiments')
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base_results_dir = f"results_{timestamp}"
