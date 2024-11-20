@@ -55,7 +55,7 @@ This will save model checkpoints to the `checkpoints/` directory, using CUDA by 
 
 3. Generate evaluation plots:
 ```bash
-python eval_checkpoints.py
+python eval_and_plot.py
 ```
 This will create the performance curves shown above in the `plots/` directory.
 
