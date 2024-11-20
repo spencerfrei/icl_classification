@@ -45,7 +45,7 @@ python -m pip install -r requirements.txt
 python -m pytest test.py -v
 ```
 
-All tests should pass.
+All tests should pass (you may get a few warnings about package deprecations).
 
 2. Train models across different dimensions and batch sizes:
 ```bash
@@ -68,13 +68,13 @@ The codebase consists of three main components:
   - `LinearTransformer`: Single-layer linear transformer model
   - `Trainer`: Handles training loop and metrics tracking
 
-- `test_classification_icl.py`: Comprehensive test suite covering:
+- `test.py`: Comprehensive test suite covering:
   - Dataset generation and properties
   - Model architecture
   - Training dynamics
   - Memorization behavior
 
-- `eval_checkpoints.py`: Evaluation utilities including:
+- `eval_and_plot.py`: Evaluation utilities including:
   - Loading and analyzing model checkpoints
   - Computing performance metrics
   - Generating plots
