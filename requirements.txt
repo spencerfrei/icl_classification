@@ -1,5 +1,5 @@
 torch==2.5.0
-numpy==2.1.0
+numpy==1.23.5
 wandb==0.15.7
 matplotlib==3.8.0
 pandas==2.2.2
